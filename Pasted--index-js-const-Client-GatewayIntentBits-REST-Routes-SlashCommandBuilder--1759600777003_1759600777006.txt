@@ -1,0 +1,215 @@
+// index.js
+const { 
+  Client, 
+  GatewayIntentBits, 
+  REST, 
+  Routes, 
+  SlashCommandBuilder 
+} = require("discord.js");
+const express = require("express");
+const fs = require("fs");
+require("dotenv").config();
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+const TOKEN = process.env.BOT_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const OWNER_ID = "YOUR_USER_ID"; // Replace with your Discord ID
+
+// ---- Keep Alive ----
+const app = express();
+app.get("/", (req, res) => res.send("Bot is alive! 🚀"));
+app.listen(3000, () => console.log("🌐 Web server running to keep bot alive."));
+
+// ---- File paths ----
+const COMMANDS_FILE = "commands.json";
+const ALLOWED_FILE = "allowed.json";
+
+// ---- Load & Save Custom Commands ----
+let customCommands = {};
+function loadCommands() {
+  if (fs.existsSync(COMMANDS_FILE)) {
+    try {
+      customCommands = JSON.parse(fs.readFileSync(COMMANDS_FILE, "utf8"));
+      console.log("📂 Loaded custom commands:", Object.keys(customCommands));
+    } catch (err) {
+      console.error("⚠️ Error reading commands file:", err);
+      customCommands = {};
+    }
+  }
+}
+function saveCommands() {
+  fs.writeFileSync(COMMANDS_FILE, JSON.stringify(customCommands, null, 2));
+  console.log("💾 Saved custom commands:", Object.keys(customCommands));
+}
+
+// ---- Load & Save Allowed Users ----
+let allowedUsers = new Set([OWNER_ID]);
+function loadAllowed() {
+  if (fs.existsSync(ALLOWED_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(ALLOWED_FILE, "utf8"));
+      allowedUsers = new Set(data);
+      console.log("📂 Loaded allowed users:", [...allowedUsers]);
+    } catch (err) {
+      console.error("⚠️ Error reading allowed users file:", err);
+      allowedUsers = new Set([OWNER_ID]);
+    }
+  }
+}
+function saveAllowed() {
+  fs.writeFileSync(ALLOWED_FILE, JSON.stringify([...allowedUsers], null, 2));
+  console.log("💾 Saved allowed users:", [...allowedUsers]);
+}
+
+// Load data
+loadCommands();
+loadAllowed();
+
+// ---- REST client ----
+const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+// ---- Helper: truncate for Discord description ----
+function truncateDescription(text) {
+  if (text.length <= 100) return text;
+  return text.slice(0, 97) + "..."; // truncate + ellipsis
+}
+
+// ---- Register/Update Commands with safe description ----
+async function updateCommand(name, response) {
+  try {
+    const body = [
+      new SlashCommandBuilder()
+        .setName(name)
+        .setDescription(truncateDescription(response))
+        .toJSON()
+    ];
+    await rest.post(Routes.applicationCommands(CLIENT_ID), { body });
+    console.log(`✅ Command /${name} updated/added live.`);
+  } catch (err) {
+    console.error(`⚠️ Error updating command /${name}:`, err);
+  }
+}
+
+async function deleteCommand(name) {
+  try {
+    const current = await rest.get(Routes.applicationCommands(CLIENT_ID));
+    const cmd = current.find(c => c.name === name);
+    if (cmd) {
+      await rest.delete(`${Routes.applicationCommands(CLIENT_ID)}/${cmd.id}`);
+      console.log(`🗑️ Command /${name} deleted live.`);
+    }
+  } catch (err) {
+    console.error(`⚠️ Error deleting command /${name}:`, err);
+  }
+}
+
+// ---- Command Handler ----
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  const { commandName, user } = interaction;
+  const userId = user.id;
+
+  if (commandName !== "commands" && !allowedUsers.has(userId)) {
+    return interaction.reply({ content: "❌ You are not allowed to use this bot.", ephemeral: true });
+  }
+
+  // Built-in commands
+  if (commandName === "help") return interaction.reply("yooo, join up papi https://discord.gg/min");
+  if (commandName === "ping") return interaction.reply("pong!");
+  if (commandName === "hi") return interaction.reply(`${user} hi!`);
+
+  // Owner-only commands
+  if (commandName === "allow") {
+    if (userId !== OWNER_ID) return interaction.reply({ content: "❌ Only owner can allow users.", ephemeral: true });
+    const target = interaction.options.getUser("user");
+    allowedUsers.add(target.id);
+    saveAllowed();
+    return interaction.reply(`✅ Added <@${target.id}> to allowed users.`);
+  }
+
+  if (commandName === "remove") {
+    if (userId !== OWNER_ID) return interaction.reply({ content: "❌ Only owner can remove users.", ephemeral: true });
+    const target = interaction.options.getUser("user");
+    allowedUsers.delete(target.id);
+    saveAllowed();
+    return interaction.reply(`✅ Removed <@${target.id}>.`);
+  }
+
+  if (commandName === "allowed") {
+    if (userId !== OWNER_ID) return interaction.reply({ content: "❌ Only owner can see allowed users.", ephemeral: true });
+    const mentions = [...allowedUsers].map(id => `<@${id}>`).join("\n");
+    return interaction.reply({ content: `📜 Allowed users:\n${mentions}`, ephemeral: true });
+  }
+
+  // Custom command management
+  if (commandName === "addcommand") {
+    if (userId !== OWNER_ID) return interaction.reply({ content: "❌ Only owner can add commands.", ephemeral: true });
+    const name = interaction.options.getString("name").toLowerCase();
+    const response = interaction.options.getString("response");
+    customCommands[name] = response;
+    saveCommands();
+    await updateCommand(name, response);
+    return interaction.reply(`✅ Custom command /${name} added live!`);
+  }
+
+  if (commandName === "removecommand") {
+    if (userId !== OWNER_ID) return interaction.reply({ content: "❌ Only owner can remove commands.", ephemeral: true });
+    const name = interaction.options.getString("name").toLowerCase();
+    if (customCommands[name]) {
+      delete customCommands[name];
+      saveCommands();
+      await deleteCommand(name);
+      return interaction.reply(`✅ Custom command /${name} removed live!`);
+    } else {
+      return interaction.reply(`⚠️ No custom command found named /${name}.`);
+    }
+  }
+
+  if (commandName === "editcommand") {
+    if (userId !== OWNER_ID) return interaction.reply({ content: "❌ Only owner can edit commands.", ephemeral: true });
+    const name = interaction.options.getString("name").toLowerCase();
+    const response = interaction.options.getString("response");
+    if (customCommands[name]) {
+      customCommands[name] = response;
+      saveCommands();
+      await updateCommand(name, response);
+      return interaction.reply(`✏️ Custom command /${name} updated live!`);
+    } else {
+      return interaction.reply(`⚠️ No custom command found named /${name}.`);
+    }
+  }
+
+  if (commandName === "commands") {
+    if (Object.keys(customCommands).length === 0) return interaction.reply("⚠️ No custom commands yet.");
+    const list = Object.keys(customCommands).map(c => `/${c}`).join(", ");
+    return interaction.reply(`📜 Custom commands: ${list}`);
+  }
+
+  // Dynamic custom commands
+  if (customCommands[commandName]) return interaction.reply(customCommands[commandName]);
+});
+
+// ---- Startup ----
+client.once("ready", async () => {
+  console.log(`🤖 Logged in as ${client.user.tag}`);
+
+  // Built-in commands
+  await updateCommand("help", "yooo, join up papi https://discord.gg/min");
+  await updateCommand("ping", "Replies with pong!");
+  await updateCommand("hi", "Say hi back!");
+  await updateCommand("allow", "Allow another user (Owner only)");
+  await updateCommand("remove", "Remove a user (Owner only)");
+  await updateCommand("allowed", "List allowed users (Owner only)");
+  await updateCommand("addcommand", "Add a custom command (Owner only)");
+  await updateCommand("removecommand", "Remove a custom command (Owner only)");
+  await updateCommand("editcommand", "Edit a custom command (Owner only)");
+  await updateCommand("commands", "List all custom commands (everyone)");
+
+  // Custom commands with truncated descriptions
+  for (const name of Object.keys(customCommands)) {
+    await updateCommand(name, customCommands[name]);
+  }
+});
+
+client.login(TOKEN);

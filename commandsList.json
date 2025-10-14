@@ -1,0 +1,25 @@
+{
+  "Utility": {
+    "ping": "Replies with Pong! Shows latency.",
+    "hi": "Greets the user.",
+    "help": "Shows this command list."
+  },
+  "Fun": {
+    "meme": "Shows a random meme.",
+    "quote": "Gives a random quote."
+  },
+  "Economy": {
+    "balance": "Shows your balance.",
+    "daily": "Gives you daily coins."
+  },
+  "Moderation": {
+    "kick": "Kicks a user.",
+    "ban": "Bans a user.",
+    "purge": "Deletes messages."
+  },
+  "Owner": {
+    "addcommand": "Creates a new custom command.",
+    "reload": "Reloads the bot.",
+    "eval": "Owner-only JavaScript execution."
+  }
+}
