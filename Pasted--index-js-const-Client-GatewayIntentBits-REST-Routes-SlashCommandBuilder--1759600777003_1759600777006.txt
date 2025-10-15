@@ -212,4 +212,39 @@ client.once("ready", async () => {
   }
 });
 
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+
+  // 👑 Ensure owner is always allowed
+  allowedUsers.add(OWNER_ID);
+  writeJson(ALLOWED_FILE, [...allowedUsers]);
+
+  // 🎮 Rotate activity type (Playing, Listening, Watching, Competing)
+  const activityTypes = [0, 2, 3, 5]; // 0=Playing, 2=Listening, 3=Watching, 5=Competing
+  const statuses = ['online', 'idle', 'dnd']; // online, away, do not disturb
+
+  let i = Math.floor(Math.random() * activityTypes.length); // random start
+
+  // Function to update presence
+  const updatePresence = () => {
+    const activity = activityTypes[i % activityTypes.length];
+    const status = statuses[Math.floor(Math.random() * statuses.length)];
+
+    client.user.setPresence({
+      activities: [{ name: 'at /min', type: activity }],
+      status
+    });
+
+    console.log(`🌀 Presence updated: type=${activity}, status=${status}`);
+    i++;
+  };
+
+  // Set initial presence and start rotation
+  updatePresence();
+  setInterval(updatePresence, 60_000); // change every 60s
+
+  await registerAll();
+  console.log('✅ Status rotation with dynamic presence started.');
+});
+
 client.login(TOKEN);
