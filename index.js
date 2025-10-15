@@ -1,13 +1,19 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v9');
-const fs = require('fs'); // <--- NEW: File System Import
+const fs = require('fs');
 
-// UPDATED: Now importing 'ownerId' from config.json
-const { token, clientId, guildId, ownerId } = require('./config.json');
+// --- START: Environment Variable Setup for Render ---
+// We read all secrets directly from the environment
+const token = process.env.TOKEN;
+const clientId = process.env.CLIENT_ID;
+const guildId = process.env.GUILD_ID;
+const ownerId = process.env.OWNER_ID; // <--- This must be set on Render
+// --- END: Environment Variable Setup for Render ---
+
 
 // --- START: NEW STATUS/ALLOWED USERS SETUP ---
-const OWNER_ID = ownerId; // Uses the imported ownerId
+const OWNER_ID = ownerId; // Uses the environment variable
 const ALLOWED_FILE = './allowedUsers.json';
 
 // Load allowed users from file, or create a new Set
