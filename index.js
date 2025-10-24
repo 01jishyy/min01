@@ -26,12 +26,12 @@ const playdl = require('play-dl');
 require('dotenv').config();
 
 // ----------- ENV VARIABLES -----------
-const TOKEN = process.env.BOT_TOKEN;
+const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const OWNER_ID = process.env.OWNER_ID;
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'defaultpassword';
 if (!TOKEN || !CLIENT_ID || !OWNER_ID) {
-  console.error("❌ Missing BOT_TOKEN, CLIENT_ID or OWNER_ID. Add them in Render Environment.");
+  console.error("❌ Missing TOKEN, CLIENT_ID or OWNER_ID. Add them in Render Environment.");
   process.exit(1);
 }
 
