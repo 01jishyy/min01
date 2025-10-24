@@ -1,19 +1,17 @@
-// ---------- Modern Discord Bot (Render Compatible) ----------
-// Includes: Dashboard, Music System (play-dl), Rotating Status, Economy Ready
+// Modern Discord Bot w/ Music + Dashboard (Render Safe)
+// Includes: /play, /skip, /pause, /disconnect, /clearqueue, /queueshift, /queue, /np
+// Supports YouTube + SoundCloud (no cookie required)
+// Author: you 👑
 
-// ------------- Imports -------------
 const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  Collection
+  Client, GatewayIntentBits, Partials,
+  REST, Routes, SlashCommandBuilder, Collection
 } = require('discord.js');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const fetch = require('node-fetch');
+const ms = require('ms');
 const prettyMs = require('pretty-ms');
 const rateLimit = require('express-rate-limit');
 const {
@@ -24,56 +22,44 @@ const {
   getVoiceConnection
 } = require('@discordjs/voice');
 const playdl = require('play-dl');
+
 require('dotenv').config();
 
-// ------------- Initialize play-dl (fix YouTube fetching) -------------
-(async () => {
-  try {
-    await playdl.setToken({
-      youtube: { cookie: process.env.YT_COOKIE || "" }
-    });
-    console.log("🎵 play-dl initialized successfully.");
-  } catch (err) {
-    console.log("⚠️ Could not initialize play-dl:", err.message);
-  }
-})();
-
-// ------------- Secrets -------------
-const TOKEN = process.env.TOKEN;
+// ----------- ENV VARIABLES -----------
+const TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const OWNER_ID = process.env.OWNER_ID;
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'defaultpassword';
-
 if (!TOKEN || !CLIENT_ID || !OWNER_ID) {
-  console.error("❌ Missing TOKEN, CLIENT_ID or OWNER_ID. Add them in Render environment.");
+  console.error("❌ Missing BOT_TOKEN, CLIENT_ID or OWNER_ID. Add them in Render Environment.");
   process.exit(1);
 }
 
-// ------------- File setup -------------
+// ----------- FILE SETUP -----------
 const DATA_DIR = './data';
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
-function readJson(file, fallback) {
-  try {
-    if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify(fallback ?? {}, null, 2));
-    return JSON.parse(fs.readFileSync(file, 'utf8') || '{}');
-  } catch {
-    return fallback ?? {};
-  }
-}
-function writeJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
 const MUSIC_FILE = path.join(DATA_DIR, 'musicQueues.json');
-let musicQueues = readJson(MUSIC_FILE, {});
-const saveMusic = () => writeJson(MUSIC_FILE, musicQueues);
+const ALLOWED_FILE = path.join(DATA_DIR, 'allowed.json');
+if (!fs.existsSync(MUSIC_FILE)) fs.writeFileSync(MUSIC_FILE, JSON.stringify({}));
+if (!fs.existsSync(ALLOWED_FILE)) fs.writeFileSync(ALLOWED_FILE, JSON.stringify([OWNER_ID]));
 
-// ------------- Client setup -------------
+let musicQueues = JSON.parse(fs.readFileSync(MUSIC_FILE, 'utf8') || '{}');
+let allowedUsers = new Set(JSON.parse(fs.readFileSync(ALLOWED_FILE, 'utf8') || '[]'));
+
+function saveMusic() {
+  fs.writeFileSync(MUSIC_FILE, JSON.stringify(musicQueues, null, 2));
+}
+function saveAllowed() {
+  fs.writeFileSync(ALLOWED_FILE, JSON.stringify([...allowedUsers], null, 2));
+}
+
+// ----------- CLIENT SETUP -----------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates
   ],
@@ -81,9 +67,48 @@ const client = new Client({
 });
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+// ----------- PLAY-DL INIT -----------
+(async () => {
+  try {
+    await playdl.setToken({
+      youtube: { cookie: process.env.YT_COOKIE || "" }
+    });
+    console.log("🎵 play-dl initialized (cookie present:", !!process.env.YT_COOKIE, ")");
+  } catch (err) {
+    console.warn("play-dl init warning:", err?.message || err);
+  }
+})();
+
+// ----------- STATUS ROTATION -----------
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  allowedUsers.add(OWNER_ID);
+  saveAllowed();
+
+  const activityTypes = [0, 2, 3, 5];
+  const statuses = ['online', 'idle', 'dnd'];
+  let i = 0;
+
+  const updatePresence = () => {
+    const activity = activityTypes[i % activityTypes.length];
+    const status = statuses[Math.floor(Math.random() * statuses.length)];
+    client.user.setPresence({
+      activities: [{ name: 'at /min', type: activity }],
+      status
+    });
+    console.log(`🌀 Presence updated: type=${activity}, status=${status}`);
+    i++;
+  };
+  updatePresence();
+  setInterval(updatePresence, 60000);
+
+  await registerAll();
+});
+
+// ----------- QUEUE + PLAYER LOGIC -----------
 const players = new Map();
 
-// ------------- Music Functions -------------
 async function ensureQueue(guildId) {
   if (!musicQueues[guildId]) musicQueues[guildId] = { queue: [], playing: false, nowPlaying: null };
 }
@@ -121,176 +146,170 @@ async function playNext(guildId) {
       playNext(guildId);
     });
   } catch (err) {
-    console.error("🎵 Stream error:", err);
+    console.error('playNext stream error:', err);
     playNext(guildId);
   }
 }
 
-// ------------- Slash Commands -------------
-const commands = [
-  new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
-  new SlashCommandBuilder().setName('play').setDescription('Play a song').addStringOption(o => o.setName('query').setDescription('URL or song name').setRequired(true)),
-  new SlashCommandBuilder().setName('skip').setDescription('Skip current song'),
-  new SlashCommandBuilder().setName('queue').setDescription('Show music queue'),
-  new SlashCommandBuilder().setName('np').setDescription('Now playing with progress'),
-  new SlashCommandBuilder().setName('pause').setDescription('Pause current song'),
-  new SlashCommandBuilder().setName('disconnect').setDescription('Disconnect bot from voice'),
-  new SlashCommandBuilder().setName('clearqueue').setDescription('Clear the queue'),
-  new SlashCommandBuilder().setName('queueshift')
-    .setDescription('Move a song in the queue to a new position')
-    .addIntegerOption(o => o.setName('from').setDescription('Current position').setRequired(true))
-    .addIntegerOption(o => o.setName('to').setDescription('New position').setRequired(true))
-];
-
-(async () => {
+// ----------- COMMAND REGISTRATION -----------
+async function registerAll() {
   try {
-    console.log('🔁 Registering slash commands...');
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands.map(c => c.toJSON()) });
-    console.log('✅ Slash commands updated globally.');
+    const cmds = [
+      new SlashCommandBuilder().setName('play').setDescription('Play music').addStringOption(o => o.setName('query').setDescription('Song or link').setRequired(true)),
+      new SlashCommandBuilder().setName('skip').setDescription('Skip the current song'),
+      new SlashCommandBuilder().setName('pause').setDescription('Pause the current song'),
+      new SlashCommandBuilder().setName('disconnect').setDescription('Disconnect the bot from voice'),
+      new SlashCommandBuilder().setName('clearqueue').setDescription('Clear the queue'),
+      new SlashCommandBuilder().setName('queueshift').setDescription('Move a song in the queue').addIntegerOption(o => o.setName('from').setDescription('Current position').setRequired(true)).addIntegerOption(o => o.setName('to').setDescription('New position').setRequired(true)),
+      new SlashCommandBuilder().setName('queue').setDescription('Show the queue'),
+      new SlashCommandBuilder().setName('np').setDescription('Show what’s currently playing')
+    ].map(c => c.toJSON());
+
+    console.log("🔁 Registering slash commands...");
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: cmds });
+    console.log("✅ Slash commands registered.");
   } catch (err) {
-    console.error('Register error:', err);
+    console.error("Slash register error:", err);
   }
-})();
+}
 
-// ------------- Interaction Commands -------------
+// ----------- COMMAND HANDLER -----------
 client.on('interactionCreate', async i => {
+  if (!i.isChatInputCommand()) return;
+  const cmd = i.commandName;
+  const id = i.user.id;
+
+  if (!allowedUsers.has(id) && !['play', 'queue', 'np', 'skip', 'pause', 'disconnect'].includes(cmd))
+    return i.reply({ content: '❌ You are not allowed to use this bot.', ephemeral: true });
+
   try {
-    if (!i.isChatInputCommand()) return;
-    const cmd = i.commandName;
-    const guildId = i.guildId;
-
-    await ensureQueue(guildId);
-
-    if (cmd === 'ping') return i.reply(`🏓 Pong! ${client.ws.ping}ms`);
-
-    // PLAY
     if (cmd === 'play') {
       const query = i.options.getString('query');
       const member = i.member;
-      if (!member.voice.channel)
-        return i.reply({ content: '❌ Join a voice channel first!', ephemeral: true });
+      if (!member.voice.channel) return i.reply({ content: 'Join a voice channel first.', ephemeral: true });
 
+      await ensureQueue(i.guildId);
       let song = null;
+
       try {
-        const ytType = playdl.yt_validate(query);
-        if (ytType === 'video') {
+        const ytCheck = playdl.yt_validate(query);
+        if (ytCheck === 'video') {
           const info = await playdl.video_info(query);
           song = { title: info.video_details.title, url: info.video_details.url, requestedBy: i.user.tag };
-        } else {
-          const search = await playdl.search(query, { source: { youtube: "video" }, limit: 1 });
-          if (search.length) {
-            song = { title: search[0].title, url: search[0].url, requestedBy: i.user.tag };
-          }
         }
-      } catch (err) {
-        console.error("❌ play-dl search error:", err);
+      } catch {}
+
+      if (!song) {
+        const search = await playdl.search(query, { limit: 1 }).catch(() => []);
+        if (search[0]) {
+          const it = search[0];
+          const title = it.title ?? it.name;
+          const url = it.url ?? it.link;
+          song = { title: title || query, url, requestedBy: i.user.tag };
+        }
       }
 
-      if (!song) return i.reply('❌ Could not find that song.');
+      if (!song) return i.reply({ content: '❌ Could not find that song.', ephemeral: true });
 
-      musicQueues[guildId].queue.push(song);
+      musicQueues[i.guildId].queue.push(song);
       saveMusic();
 
-      if (!getVoiceConnection(guildId)) {
+      if (!getVoiceConnection(i.guildId)) {
         joinVoiceChannel({
           channelId: member.voice.channel.id,
-          guildId,
+          guildId: i.guildId,
           adapterCreator: member.guild.voiceAdapterCreator
         });
       }
 
-      if (!musicQueues[guildId].playing) setTimeout(() => playNext(guildId), 1000);
+      if (!musicQueues[i.guildId].playing) setTimeout(() => playNext(i.guildId), 1000);
       return i.reply(`✅ Queued: **${song.title}**`);
     }
 
-    // SKIP
     if (cmd === 'skip') {
-      const player = players.get(guildId);
-      if (!player) return i.reply('❌ Nothing playing.');
-      player.stop();
+      const p = players.get(i.guildId);
+      if (!p) return i.reply('❌ Nothing is playing.');
+      p.stop();
       return i.reply('⏭ Skipped.');
     }
 
-    // QUEUE
+    if (cmd === 'pause') {
+      const p = players.get(i.guildId);
+      if (!p) return i.reply('❌ Nothing is playing.');
+      p.pause();
+      return i.reply('⏸️ Paused.');
+    }
+
+    if (cmd === 'disconnect') {
+      const conn = getVoiceConnection(i.guildId);
+      if (!conn) return i.reply('❌ Not connected.');
+      conn.destroy();
+      musicQueues[i.guildId].playing = false;
+      musicQueues[i.guildId].nowPlaying = null;
+      saveMusic();
+      return i.reply('👋 Disconnected.');
+    }
+
+    if (cmd === 'clearqueue') {
+      await ensureQueue(i.guildId);
+      musicQueues[i.guildId].queue = [];
+      saveMusic();
+      return i.reply('🧹 Queue cleared.');
+    }
+
+    if (cmd === 'queueshift') {
+      const from = i.options.getInteger('from');
+      const to = i.options.getInteger('to');
+      const q = musicQueues[i.guildId]?.queue;
+      if (!q || !q[from - 1]) return i.reply('Invalid positions.');
+      const [moved] = q.splice(from - 1, 1);
+      q.splice(to - 1, 0, moved);
+      saveMusic();
+      return i.reply(`🔀 Moved **${moved.title}** from position ${from} to ${to}.`);
+    }
+
     if (cmd === 'queue') {
-      const q = musicQueues[guildId];
-      if (!q.queue.length) return i.reply('🎶 Queue is empty.');
-      const list = q.queue.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
+      const q = musicQueues[i.guildId];
+      if (!q || !q.queue.length) return i.reply('🎶 Queue is empty.');
+      const list = q.queue.slice(0, 10).map((s, idx) => `${idx + 1}. [${s.title}](${s.url})`).join('\n');
       return i.reply({ content: `🎵 **Queue:**\n${list}` });
     }
 
-    // NOW PLAYING
     if (cmd === 'np') {
-      const q = musicQueues[guildId];
-      if (!q.nowPlaying) return i.reply('❌ Nothing is playing.');
-      const current = q.nowPlaying;
-      const elapsed = (Date.now() - (current.startedAt || 0)) / 1000;
-      const duration = current.duration || 0;
-      const bar = '▰'.repeat(Math.floor((elapsed / duration) * 15)) + '▱'.repeat(15 - Math.floor((elapsed / duration) * 15));
-      const format = s => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+      const q = musicQueues[i.guildId];
+      if (!q || !q.nowPlaying) return i.reply('❌ Nothing is playing.');
+      const c = q.nowPlaying;
+      const elapsed = (Date.now() - c.startedAt) / 1000;
+      const duration = c.duration || 0;
+      const progress = Math.min(elapsed / duration, 1);
+      const bar = '▰'.repeat(Math.floor(progress * 15)) + '▱'.repeat(15 - Math.floor(progress * 15));
+      const fmt = s => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
       return i.reply({
         embeds: [{
           title: '🎶 Now Playing',
-          description: `[${current.title}](${current.url})`,
+          description: `[${c.title}](${c.url})`,
           color: 0x5865F2,
           fields: [
             { name: 'Progress', value: bar },
-            { name: 'Time', value: `\`${format(elapsed)} / ${format(duration)}\`` }
+            { name: 'Time', value: `\`${fmt(elapsed)} / ${fmt(duration)}\`` }
           ],
-          footer: { text: `Requested by ${current.requestedBy}` },
-          timestamp: new Date()
+          footer: { text: `Requested by ${c.requestedBy}` }
         }]
       });
     }
 
-    // PAUSE
-    if (cmd === 'pause') {
-      const player = players.get(guildId);
-      if (!player) return i.reply('❌ Nothing playing.');
-      player.pause();
-      return i.reply('⏸️ Paused.');
-    }
-
-    // DISCONNECT
-    if (cmd === 'disconnect') {
-      const conn = getVoiceConnection(guildId);
-      if (!conn) return i.reply('❌ Not connected.');
-      conn.destroy();
-      return i.reply('👋 Disconnected.');
-    }
-
-    // CLEAR QUEUE
-    if (cmd === 'clearqueue') {
-      musicQueues[guildId].queue = [];
-      saveMusic();
-      return i.reply('🧹 Cleared queue.');
-    }
-
-    // QUEUE SHIFT
-    if (cmd === 'queueshift') {
-      const from = i.options.getInteger('from') - 1;
-      const to = i.options.getInteger('to') - 1;
-      const q = musicQueues[guildId].queue;
-      if (from < 0 || to < 0 || from >= q.length || to >= q.length)
-        return i.reply('❌ Invalid positions.');
-      const [song] = q.splice(from, 1);
-      q.splice(to, 0, song);
-      saveMusic();
-      return i.reply(`↕️ Moved **${song.title}** to position ${to + 1}.`);
-    }
   } catch (err) {
-    console.error("Command error:", err);
-    if (!i.replied) i.reply({ content: '⚠️ Error occurred.', ephemeral: true });
+    console.error('Command error:', err);
+    i.reply({ content: '⚠️ Error occurred.', ephemeral: true }).catch(() => {});
   }
 });
 
-// ------------- Dashboard + Keep Alive -------------
+// ----------- DASHBOARD + KEEPALIVE -----------
 const app = express();
 app.use(express.urlencoded({ extended: true }));
-const dashLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true });
-app.use('/dashboard', dashLimiter);
+app.use('/dashboard', rateLimit({ windowMs: 60_000, max: 10 }));
 
-app.get('/', (req, res) => res.send('<h2>Bot is alive. Visit <a href="/dashboard">Dashboard</a>.</h2>'));
+app.get('/', (req, res) => res.send('<h2>Bot is alive. Go to <a href="/dashboard">/dashboard</a></h2>'));
 app.get('/dashboard', (req, res) => {
   res.send(`
     <html><body>
@@ -303,30 +322,15 @@ app.get('/dashboard', (req, res) => {
 });
 app.post('/dashboard', (req, res) => {
   if (req.body.pw !== DASHBOARD_PASSWORD) return res.status(401).send('Unauthorized');
-  const g = client.guilds.cache.size;
-  const u = client.users.cache.size;
-  res.send(`<h1>Dashboard</h1><p>Guilds: ${g}</p><p>Users: ${u}</p><p>Uptime: ${prettyMs(process.uptime() * 1000)}</p>`);
+  const guilds = client.guilds.cache.size;
+  const users = client.users.cache.size;
+  res.send(`<h1>Dashboard</h1>
+    <p>Guilds: ${guilds}</p>
+    <p>Users: ${users}</p>
+    <p>Uptime: ${prettyMs(process.uptime()*1000)}</p>
+  `);
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌐 Dashboard running on port ${PORT}`));
-
-// ------------- Startup -------------
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-
-  // 🎮 Rotate activity
-  const activityTypes = [0, 2, 3, 5];
-  const statuses = ['online', 'idle', 'dnd'];
-  let i = 0;
-  const updatePresence = () => {
-    const type = activityTypes[i % activityTypes.length];
-    const status = statuses[Math.floor(Math.random() * statuses.length)];
-    client.user.setPresence({ activities: [{ name: 'at /min', type }], status });
-    console.log(`🌀 Presence updated: ${type}, ${status}`);
-    i++;
-  };
-  updatePresence();
-  setInterval(updatePresence, 60000);
-});
 
 client.login(TOKEN);
